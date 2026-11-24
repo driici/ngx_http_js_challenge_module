@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#define JS_CHALLENGE_SKIP_OFF (-2)
+
 #define DEFAULT_SECRET "changeme"
 #define SHA1_MD_LEN 20
 #define SHA1_STR_LEN 40
@@ -34,6 +36,7 @@ typedef struct {
     ngx_str_t html_path;
     ngx_str_t title;
     char *html;
+    ngx_int_t skip_index;
 } ngx_http_js_challenge_loc_conf_t;
 
 static ngx_int_t ngx_http_js_challenge(ngx_conf_t *cf);
@@ -41,6 +44,8 @@ static ngx_int_t ngx_http_js_challenge(ngx_conf_t *cf);
 static void *ngx_http_js_challenge_create_loc_conf(ngx_conf_t *cf);
 
 static char *ngx_http_js_challenge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
+
+static char *ngx_http_js_challenge_set_skip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_int_t ngx_http_js_challenge_handler(ngx_http_request_t *r);
 
@@ -54,6 +59,14 @@ static ngx_command_t ngx_http_js_challenge_commands[] = {
                 ngx_conf_set_flag_slot,
                 NGX_HTTP_LOC_CONF_OFFSET,
                 offsetof(ngx_http_js_challenge_loc_conf_t, enabled),
+                NULL
+        },
+        {
+                ngx_string("js_challenge_skip"),
+                NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+                ngx_http_js_challenge_set_skip,
+                NGX_HTTP_LOC_CONF_OFFSET,
+                offsetof(ngx_http_js_challenge_loc_conf_t, skip_index),
                 NULL
         },
         {
@@ -124,6 +137,45 @@ ngx_module_t ngx_http_js_challenge_module = {
 };
 
 
+static char *ngx_http_js_challenge_set_skip(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_int_t *skip_index = (ngx_int_t *) ((u_char *) conf + cmd->offset);
+    ngx_str_t *value = cf->args->elts;
+
+    if (*skip_index != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    if (value[1].len == sizeof("off") - 1
+        && ngx_strncmp(value[1].data, "off", sizeof("off") - 1) == 0)
+    {
+        *skip_index = JS_CHALLENGE_SKIP_OFF;
+        return NGX_CONF_OK;
+    }
+
+    if (value[1].len < 2 || value[1].data[0] != '$') {
+        return "invalid value: expected $variable or off";
+    }
+
+    for (size_t i = 1; i < value[1].len; i++) {
+        u_char c = value[1].data[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+              || (c >= '0' && c <= '9') || c == '_'))
+        {
+            return "invalid value: expected $variable or off";
+        }
+    }
+
+    ngx_str_t name = { value[1].len - 1, value[1].data + 1 };
+    ngx_int_t index = ngx_http_get_variable_index(cf, &name);
+    if (index == NGX_ERROR) {
+        return NGX_CONF_ERROR;
+    }
+
+    *skip_index = index;
+    return NGX_CONF_OK;
+}
+
+
 static void *ngx_http_js_challenge_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_js_challenge_loc_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_js_challenge_loc_conf_t));
     if (conf == NULL) {
@@ -133,6 +185,7 @@ static void *ngx_http_js_challenge_create_loc_conf(ngx_conf_t *cf) {
     conf->secret = (ngx_str_t) {0, NULL};
     conf->bucket_duration = NGX_CONF_UNSET_UINT;
     conf->enabled = NGX_CONF_UNSET;
+    conf->skip_index = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -144,6 +197,7 @@ static char *ngx_http_js_challenge_merge_loc_conf(ngx_conf_t *cf, void *parent, 
 
     ngx_conf_merge_uint_value(conf->bucket_duration, prev->bucket_duration, 3600)
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0)
+    ngx_conf_merge_value(conf->skip_index, prev->skip_index, JS_CHALLENGE_SKIP_OFF)
     ngx_conf_merge_str_value(conf->secret, prev->secret, DEFAULT_SECRET)
     ngx_conf_merge_str_value(conf->html_path, prev->html_path, NULL)
     ngx_conf_merge_str_value(conf->title, prev->title, DEFAULT_TITLE)
@@ -342,6 +396,13 @@ static ngx_int_t ngx_http_js_challenge_handler(ngx_http_request_t *r) {
         return NGX_DECLINED;
     }
 
+
+    if (conf->skip_index >= 0) {
+        ngx_http_variable_value_t *skip = ngx_http_get_flushed_variable(r, (ngx_uint_t) conf->skip_index);
+        if (skip != NULL && !skip->not_found && skip->len == 1 && skip->data[0] == '1') {
+            return NGX_DECLINED;
+        }
+    }
     unsigned long bucket = r->start_sec - (r->start_sec % conf->bucket_duration);
     ngx_str_t addr = r->connection->addr_text;
 

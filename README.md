@@ -18,6 +18,35 @@ Easy installation: just add `load_module /path/to/ngx_http_js_challenge_module.s
 
 ### Configuration
 
+For request-specific exclusions, use nginx's native `map` (or `geo`) to produce a value and
+reference it with `js_challenge_skip`:
+
+```nginx
+http {
+    map $remote_addr $skip_js_challenge {
+        default 0;
+        192.0.2.10 1;
+    }
+
+    server {
+        js_challenge on;
+        js_challenge_skip $skip_js_challenge;
+        # ...
+    }
+}
+```
+
+`js_challenge_skip $variable|off` is valid in `server` and `location` contexts. Only the exact
+value `1` skips the challenge; every other value (including an unavailable variable) keeps the
+challenge enabled. The directive inherits from its parent block when omitted. Use
+`js_challenge_skip off;` to stop inheritance in a block and its children. It cannot enable
+challenges when `js_challenge off;` is set.
+
+For CIDR or IPv6 ranges, use nginx's native `geo` module with the same `0`/`1` output. When
+matching client IPs behind a proxy, use `$remote_addr` only after configuring trusted proxies
+correctly; do not trust a client-supplied header directly. `map` and `geo` rules are evaluated
+at request time, but changing their configuration requires an nginx reload.
+
 **Simple configuration**
 ```nginx
 server {
@@ -57,6 +86,7 @@ server {
 * `js_challenge_html "/path/to/file.html"` Path to html file to be inserted in the `<body>` tag of the interstitial page
 * `js_challenge_title "title"` Will be inserted in the `<title>` tag of the interstitial page. DEFAULT: "Verifying your browser..."
 * `js_challenge_bucket_duration time` Interval to prompt js challenge, in seconds. DEFAULT: 3600
+* `js_challenge_skip $variable|off` Skip the challenge when the indexed nginx variable is exactly `1`; default inherits and `off` disables skip inheritance
 
 ### Installation
 
